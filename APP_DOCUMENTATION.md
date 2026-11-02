@@ -233,10 +233,13 @@ Shair is configured with `expo-updates` and linked to EAS with automated channel
 ### 1. Building Base APKs
 ```bash
 # Build production APK configured for the "production" update channel
-npx eas-cli@latest build --platform android --profile production-apk
+npm run build:apk
+
+# Or directly with EAS:
+NODE_OPTIONS="--no-network-family-autoselection" npx eas-cli@latest build --platform android --profile production-apk
 
 # Build preview APK
-npx eas-cli@latest build --platform android --profile preview
+npm run build:preview
 ```
 
 ### 2. Publishing Instant Over-The-Air Updates
