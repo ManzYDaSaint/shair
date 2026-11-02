@@ -2,7 +2,7 @@
   "expo": {
     "name": "Shair",
     "slug": "shair",
-    "owner": "nyangazie",
+    "owner": "nyangazies-team",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -32,13 +32,22 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/374ed1ff-274d-45cc-b9cd-2a5e283e1761",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 1000
+    },
     "plugins": [
       "expo-sqlite",
       "expo-sharing",
       [
         "expo-file-system",
         {}
-      ]
+      ],
+      "expo-updates"
     ],
     "extra": {
       "eas": {

@@ -1,4 +1,4 @@
-# CircleFund — Women Monthly Contribution & Membership Fee App
+# Shair — Women Monthly Contribution & Membership Fee App
 
 An elegant, minimalistic, and dead-simple Android application built with React Native (Expo SDK 58) and persistent local SQLite storage. Designed specifically for women's rotating savings clubs, chamas, and welfare associations.
 
@@ -50,7 +50,27 @@ An elegant, minimalistic, and dead-simple Android application built with React N
 
 ---
 
-### 5. 🎨 Design & Aesthetic System
+### 5. 👥 Contributor Management & Status Tracking
+- **Lifecycle Statuses**: Members can be marked as `Active`, `Stopped` (with reason, e.g. withdrew or completed term), or `Transferred` (e.g. relocated to another chapter).
+- **Visual Indicators**: Visual badges and distinct avatar badge highlights on stopped/transferred contributors.
+- **Filtering**: Instant tabular filter strip by status (`All`, `Active`, `Stopped`, `Transferred`, `Due`).
+
+---
+
+### 6. 💾 Local Backup & Restore
+- **Zero-Cloud Data Sovereignty**: Export complete offline JSON backups of members, payments, expenses, and settings at any time.
+- **Native Sharing**: One-tap export via Android system sheet to WhatsApp, Google Drive, Gmail, or local storage using `expo-sharing` & `expo-file-system`.
+- **Fast Restore**: Direct copy-paste restore mechanism with transactional verification.
+
+---
+
+### 7. 📄 Financial PDF Reports & Statements
+- **Print & PDF Generation**: Generates clean, printable HTML-based audit statements and ledgers using `expo-print`.
+- **Instant Sharing**: Share PDF ledger reports directly with club members.
+
+---
+
+### 8. 🎨 Design & Aesthetic System
 - **Theme**: *Terracotta & Plum Community Finance* (Warm Tactile Minimalism).
 - **Colors**:
   - **Terracotta Rose (`#944430`)**: Collective warmth, call-to-actions, and accents.
@@ -89,6 +109,8 @@ erDiagram
         string phone_number
         string avatar_initials
         string role
+        string status "active | stopped | transferred"
+        string status_reason
         int is_active
     }
 
@@ -118,10 +140,34 @@ erDiagram
         float amount
         string category
         string expense_date
+        int year
         string recorded_by
         string notes
     }
+
+    FINANCIAL_YEARS {
+        int year PK
+        string status "active | closed"
+        float opening_balance
+        float total_income
+        float total_expenses
+        float closing_balance
+        string closed_at
+        string closed_by
+        string notes
+    }
 ```
+
+### Financial Year Close & Carry-Forward Lifecycle
+
+1. **Active Cycle**: Members make payments, expenses are tracked against `settings.active_year`.
+2. **Year Close Execution**:
+   - Computes total income collected, total expenses, and net surplus.
+   - Archives the year with `status = 'closed'`, snapshotting totals, timestamp, closing officer, and remarks.
+   - Creates the subsequent cycle (`year + 1`) initialized with `opening_balance = carriedForwardAmount`.
+   - Transitions `group_settings.active_year` to the new year.
+   - All historical records remain intact and immutable while viewing archived cycles.
+3. **Audit & Reopening**: Treasurers can switch cycles via the Cycle Switcher to inspect historic closed years, with the option to reopen an archived cycle if adjustments are needed.
 
 ---
 
@@ -129,24 +175,32 @@ erDiagram
 
 ```
 shair/
-├── App.tsx                     # Main application entry point & root navigator
-├── app.json                    # Expo configuration
-├── package.json                # Project dependencies
+├── App.tsx                     # Main application entry point & root stage navigator
+├── app.json                    # Expo configuration & plugins (sqlite, file-system, sharing)
+├── package.json                # Project dependencies and scripts (start, test, build)
+├── tsconfig.json               # TypeScript configuration with test exclusions
+├── __tests__/                  # Automated unit test suite
+│   └── financialMath.test.ts   # Tests for income, expense deductions, dues & formatting
 ├── template/                   # UI/UX design mockups and token specifications
 ├── src/
 │   ├── constants/
 │   │   └── theme.ts            # Terracotta & Plum color tokens, spacing, radiuses
 │   ├── types/
-│   │   └── index.ts            # TypeScript interfaces for database & state
+│   │   └── index.ts            # TypeScript interfaces for database, state & member statuses
+│   ├── utils/
+│   │   └── financialMath.ts    # Isolated financial math engine (income, expenses, balances, columns)
 │   ├── db/
-│   │   ├── index.ts            # SQLite initialization, schema creation & seeding
-│   │   └── dbService.ts        # Database queries (CRUD for members, payments, expenses)
+│   │   ├── index.ts            # SQLite initialization, schema creation, migrations & seeding
+│   │   └── dbService.ts        # Database queries (CRUD, backup JSON export & restore transaction)
 │   ├── context/
-│   │   └── AppContext.tsx      # Global reactive state provider & automated math engine
+│   │   └── AppContext.tsx      # Global reactive state provider & automated compute engine
 │   ├── components/
 │   │   ├── SummaryHeaderCard.tsx  # Top financial card (Net Balance, Collections, Expenses)
-│   │   └── QuickPaymentModal.tsx  # Cell-tap bottom sheet for 1-tap payment logging
+│   │   ├── QuickPaymentModal.tsx  # Cell-tap bottom sheet for 1-tap payment logging
+│   │   └── BottomNavBar.tsx       # Bottom 3-tab navigation bar with badge counters
 │   └── screens/
+│       ├── SplashScreen.tsx       # Welcoming branded launch splash
+│       ├── OnboardingScreen.tsx   # First-run setup for group name, year & targets
 │       ├── LedgerMatrixScreen.tsx # Spreadsheet contribution table (SR, Name, Fee, Months, Total)
 │       ├── ExpensesScreen.tsx     # Expenses tracker that deducts from total balance
 │       └── CustomColumnsScreen.tsx# Manager for dynamic/custom columns
@@ -154,14 +208,45 @@ shair/
 
 ---
 
-## 🚀 Running the App
-
-To run the app on Android:
+## 🚀 Running the App & Tests
 
 ```bash
 # Start the Expo development server
-npx expo start
+npm start
+
+# Run automated financial calculation unit tests
+npm test
+
+# Run TypeScript typecheck
+npx tsc --noEmit
 
 # Or directly target Android emulator / device
 npx expo run:android
 ```
+
+---
+
+## ⚡ Over-The-Air (OTA) Updates & EAS Builds
+
+Shair is configured with `expo-updates` and linked to EAS with automated channel routing:
+
+### 1. Building Base APKs
+```bash
+# Build production APK configured for the "production" update channel
+npx eas-cli@latest build --platform android --profile production-apk
+
+# Build preview APK
+npx eas-cli@latest build --platform android --profile preview
+```
+
+### 2. Publishing Instant Over-The-Air Updates
+When you modify React components, styles, or queries without adding new native Android code:
+```bash
+# Publish instant update to production APKs
+npm run update:prod -- --message "Describe your update"
+
+# Or publish to preview testers
+npm run update:preview -- --message "Describe your update"
+```
+The installed app checks for updates automatically on launch (`ON_LOAD`), downloads the new JS bundle seamlessly in the background, and preserves local SQLite databases.
+

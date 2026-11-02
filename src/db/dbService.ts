@@ -1,5 +1,5 @@
 import { getDatabase } from './index';
-import { GroupSettings, Member, CustomColumn, PaymentRecord, Expense, MemberStatus } from '../types';
+import { GroupSettings, Member, CustomColumn, PaymentRecord, Expense, MemberStatus, FinancialYear } from '../types';
 
 export const DbService = {
   async getSettings(): Promise<GroupSettings> {
@@ -157,16 +157,20 @@ export const DbService = {
     `, [memberId, itemKey, year, amount, targetAmount, status, now]);
   },
 
-  async getExpenses(): Promise<Expense[]> {
+  async getExpenses(year?: number): Promise<Expense[]> {
     const db = await getDatabase();
+    if (year !== undefined) {
+      return await db.getAllAsync<Expense>('SELECT * FROM expenses WHERE year = ? ORDER BY expense_date DESC, id DESC', [year]);
+    }
     return await db.getAllAsync<Expense>('SELECT * FROM expenses ORDER BY expense_date DESC, id DESC');
   },
 
-  async addExpense(title: string, amount: number, category: string, date: string, recordedBy?: string, notes?: string): Promise<Expense> {
+  async addExpense(title: string, amount: number, category: string, date: string, recordedBy?: string, notes?: string, year?: number): Promise<Expense> {
     const db = await getDatabase();
+    const resolvedYear = year || (date ? parseInt(date.substring(0, 4), 10) : 2026) || 2026;
     const res = await db.runAsync(
-      'INSERT INTO expenses (title, amount, category, expense_date, recorded_by, notes) VALUES (?, ?, ?, ?, ?, ?)',
-      [title, amount, category, date, recordedBy || '', notes || '']
+      'INSERT INTO expenses (title, amount, category, expense_date, year, recorded_by, notes) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [title, amount, category, date, resolvedYear, recordedBy || '', notes || '']
     );
     return {
       id: res.lastInsertRowId,
@@ -184,6 +188,96 @@ export const DbService = {
     await db.runAsync('DELETE FROM expenses WHERE id = ?', [id]);
   },
 
+  // ---------------------------------------------------------------------------
+  // Financial Year Lifecycle
+  // ---------------------------------------------------------------------------
+  async getFinancialYear(year: number): Promise<FinancialYear | null> {
+    const db = await getDatabase();
+    const row = await db.getFirstAsync<FinancialYear>('SELECT * FROM financial_years WHERE year = ?', [year]);
+    return row || null;
+  },
+
+  async getAllFinancialYears(): Promise<FinancialYear[]> {
+    const db = await getDatabase();
+    return await db.getAllAsync<FinancialYear>('SELECT * FROM financial_years ORDER BY year ASC');
+  },
+
+  async ensureFinancialYear(year: number, openingBalance: number = 0): Promise<FinancialYear> {
+    const db = await getDatabase();
+    const existing = await this.getFinancialYear(year);
+    if (existing) return existing;
+
+    await db.runAsync(
+      'INSERT INTO financial_years (year, status, opening_balance, total_income, total_expenses, closing_balance) VALUES (?, "open", ?, 0, 0, 0)',
+      [year, openingBalance]
+    );
+
+    return {
+      year,
+      status: 'open',
+      opening_balance: openingBalance,
+      total_income: 0,
+      total_expenses: 0,
+      closing_balance: 0,
+    };
+  },
+
+  async closeFinancialYear(params: {
+    closingYear: number;
+    nextYear: number;
+    carriedForwardAmount: number;
+    closedBy: string;
+    notes?: string;
+  }): Promise<void> {
+    const db = await getDatabase();
+    const { closingYear, nextYear, carriedForwardAmount, closedBy, notes } = params;
+
+    // 1. Calculate final snapshot totals for closing year
+    const payments = await this.getPayments(closingYear);
+    const expenses = await this.getExpenses(closingYear);
+    const existingFY = await this.getFinancialYear(closingYear);
+    const openingBal = existingFY?.opening_balance || 0;
+
+    const totalIncome = payments.reduce((acc, p) => acc + (p.amount_paid || 0), 0);
+    const totalExpenses = expenses.reduce((acc, e) => acc + (e.amount || 0), 0);
+    const closingBalance = openingBal + totalIncome - totalExpenses;
+    const now = new Date().toISOString();
+
+    await db.withTransactionAsync(async () => {
+      // 2. Mark closing year as closed in financial_years
+      await db.runAsync(`
+        INSERT INTO financial_years (year, status, opening_balance, total_income, total_expenses, closing_balance, closed_at, closed_by, notes)
+        VALUES (?, 'closed', ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(year) DO UPDATE SET
+          status = 'closed',
+          opening_balance = excluded.opening_balance,
+          total_income = excluded.total_income,
+          total_expenses = excluded.total_expenses,
+          closing_balance = excluded.closing_balance,
+          closed_at = excluded.closed_at,
+          closed_by = excluded.closed_by,
+          notes = excluded.notes
+      `, [closingYear, openingBal, totalIncome, totalExpenses, closingBalance, now, closedBy, notes || '']);
+
+      // 3. Create or update next year as open with carriedForwardAmount
+      await db.runAsync(`
+        INSERT INTO financial_years (year, status, opening_balance, total_income, total_expenses, closing_balance)
+        VALUES (?, 'open', ?, 0, 0, 0)
+        ON CONFLICT(year) DO UPDATE SET
+          opening_balance = excluded.opening_balance,
+          status = 'open'
+      `, [nextYear, carriedForwardAmount]);
+
+      // 4. Update active year in group_settings
+      await db.runAsync('UPDATE group_settings SET active_year = ? WHERE id = 1', [nextYear]);
+    });
+  },
+
+  async reopenFinancialYear(year: number): Promise<void> {
+    const db = await getDatabase();
+    await db.runAsync('UPDATE financial_years SET status = "open" WHERE year = ?', [year]);
+  },
+
   async backupData(): Promise<string> {
     const db = await getDatabase();
     const settings = await this.getSettings();
@@ -191,9 +285,10 @@ export const DbService = {
     const customColumns = await db.getAllAsync<CustomColumn>('SELECT * FROM custom_columns');
     const payments = await db.getAllAsync<PaymentRecord>('SELECT * FROM payments');
     const expenses = await db.getAllAsync<Expense>('SELECT * FROM expenses');
+    const financialYears = await this.getAllFinancialYears();
 
     const payload = {
-      version: 1,
+      version: 2,
       backupDate: new Date().toISOString(),
       groupName: settings.group_name,
       activeYear: settings.active_year,
@@ -203,6 +298,7 @@ export const DbService = {
         customColumns,
         payments,
         expenses,
+        financialYears,
       },
     };
 
@@ -224,6 +320,7 @@ export const DbService = {
       await db.runAsync('DELETE FROM expenses');
       await db.runAsync('DELETE FROM members');
       await db.runAsync('DELETE FROM custom_columns');
+      await db.runAsync('DELETE FROM financial_years');
 
       // Restore Settings
       if (settings) {
@@ -231,6 +328,17 @@ export const DbService = {
           `UPDATE group_settings SET group_name = ?, currency_symbol = ?, active_year = ?, default_membership_fee = ?, default_monthly_contribution = ? WHERE id = 1`,
           [settings.group_name, settings.currency_symbol || 'MWK ', settings.active_year || 2026, settings.default_membership_fee || 5000, settings.default_monthly_contribution || 5000]
         );
+      }
+
+      // Restore Financial Years
+      if (Array.isArray(parsed.data.financialYears)) {
+        for (const fy of parsed.data.financialYears) {
+          await db.runAsync(
+            `INSERT INTO financial_years (year, status, opening_balance, total_income, total_expenses, closing_balance, closed_at, closed_by, notes)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [fy.year, fy.status || 'open', fy.opening_balance || 0, fy.total_income || 0, fy.total_expenses || 0, fy.closing_balance || 0, fy.closed_at || null, fy.closed_by || null, fy.notes || null]
+          );
+        }
       }
 
       // Restore Members
@@ -269,10 +377,11 @@ export const DbService = {
       // Restore Expenses
       if (Array.isArray(expenses)) {
         for (const e of expenses) {
+          const expYear = e.year || (e.expense_date ? parseInt(e.expense_date.substring(0, 4), 10) : 2026) || 2026;
           await db.runAsync(
-            `INSERT INTO expenses (id, title, amount, category, expense_date, recorded_by, notes)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [e.id, e.title, e.amount, e.category, e.expense_date, e.recorded_by ?? '', e.notes ?? '']
+            `INSERT INTO expenses (id, title, amount, category, expense_date, year, recorded_by, notes)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [e.id, e.title, e.amount, e.category, e.expense_date, expYear, e.recorded_by ?? '', e.notes ?? '']
           );
         }
       }

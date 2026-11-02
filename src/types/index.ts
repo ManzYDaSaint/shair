@@ -7,6 +7,18 @@ export interface GroupSettings {
   default_monthly_contribution: number;
 }
 
+export interface FinancialYear {
+  year: number;
+  status: 'open' | 'closed';
+  opening_balance: number;
+  total_income: number;
+  total_expenses: number;
+  closing_balance: number;
+  closed_at?: string;
+  closed_by?: string;
+  notes?: string;
+}
+
 export type MemberStatus = 'active' | 'stopped' | 'transferred';
 
 export interface Member {

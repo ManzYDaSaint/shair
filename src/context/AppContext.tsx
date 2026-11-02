@@ -1,6 +1,13 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
-import { GroupSettings, Member, CustomColumn, PaymentRecord, Expense, MONTH_KEYS, MemberStatus } from '../types';
+import { GroupSettings, Member, CustomColumn, PaymentRecord, Expense, MONTH_KEYS, MemberStatus, FinancialYear } from '../types';
 import { DbService } from '../db/dbService';
+import {
+  calculateTotalIncome,
+  calculateTotalExpenses,
+  calculateNetBalance,
+  calculateMemberRowTotal,
+  calculateColumnTotal,
+} from '../utils/financialMath';
 
 interface AppContextType {
   loading: boolean;
@@ -11,9 +18,15 @@ interface AppContextType {
   expenses: Expense[];
   
   // Computed Financial Totals
+  openingBalance: number;       // Opening balance carried forward
   totalIncome: number;          // Total of all contributions, fees, custom columns
   totalExpenses: number;        // Sum of all group expenses
-  netBalance: number;           // totalIncome - totalExpenses
+  netBalance: number;           // openingBalance + totalIncome - totalExpenses
+  
+  // Financial Year Lifecycle
+  currentFinancialYear: FinancialYear | null;
+  allFinancialYears: FinancialYear[];
+  isYearClosed: boolean;
   
   // Helpers
   refreshAll: () => Promise<void>;
@@ -28,6 +41,14 @@ interface AppContextType {
   recordPayment: (memberId: number, itemKey: string, amount: number, targetAmount: number) => Promise<void>;
   addExpense: (title: string, amount: number, category: string, date: string, recordedBy?: string, notes?: string) => Promise<void>;
   deleteExpense: (id: number) => Promise<void>;
+  closeFinancialYear: (params: {
+    closingYear: number;
+    nextYear: number;
+    carriedForwardAmount: number;
+    closedBy: string;
+    notes?: string;
+  }) => Promise<void>;
+  reopenFinancialYear: (year: number) => Promise<void>;
   backupData: () => Promise<string>;
   restoreData: (jsonString: string) => Promise<void>;
   
@@ -46,6 +67,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [customColumns, setCustomColumns] = useState<CustomColumn[]>([]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [financialYear, setFinancialYear] = useState<FinancialYear | null>(null);
+  const [allFinancialYears, setAllFinancialYears] = useState<FinancialYear[]>([]);
 
   const refreshAll = useCallback(async () => {
     try {
@@ -53,13 +76,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const m = await DbService.getMembers();
       const c = await DbService.getCustomColumns();
       const p = await DbService.getPayments(s.active_year);
-      const e = await DbService.getExpenses();
+      const e = await DbService.getExpenses(s.active_year);
+      const fy = await DbService.ensureFinancialYear(s.active_year);
+      const allFy = await DbService.getAllFinancialYears();
 
       setSettings(s);
       setMembers(m);
       setCustomColumns(c);
       setPayments(p);
       setExpenses(e);
+      setFinancialYear(fy);
+      setAllFinancialYears(allFy);
     } catch (err) {
       console.error('Failed to load local SQLite data:', err);
     } finally {
@@ -85,33 +112,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [paymentMap]);
 
   // Calculations
+  const openingBalance = useMemo(() => {
+    return financialYear?.opening_balance || 0;
+  }, [financialYear]);
+
   const totalIncome = useMemo(() => {
-    return payments.reduce((acc, p) => acc + (p.amount_paid || 0), 0);
+    return calculateTotalIncome(payments);
   }, [payments]);
 
   const totalExpenses = useMemo(() => {
-    return expenses.reduce((acc, e) => acc + (e.amount || 0), 0);
+    return calculateTotalExpenses(expenses);
   }, [expenses]);
 
   const netBalance = useMemo(() => {
-    return totalIncome - totalExpenses;
-  }, [totalIncome, totalExpenses]);
+    return calculateNetBalance(totalIncome, totalExpenses, openingBalance);
+  }, [totalIncome, totalExpenses, openingBalance]);
+
+  const isYearClosed = useMemo(() => {
+    return financialYear?.status === 'closed';
+  }, [financialYear]);
 
   const getMemberRowTotal = useCallback((memberId: number) => {
-    const memberPayments = payments.filter(p => p.member_id === memberId);
-    const paid = memberPayments.reduce((acc, p) => acc + (p.amount_paid || 0), 0);
-    const target = memberPayments.reduce((acc, p) => acc + (p.target_amount || 0), 0);
-    return {
-      paid,
-      target,
-      balance: Math.max(0, target - paid),
-    };
+    return calculateMemberRowTotal(payments, memberId);
   }, [payments]);
 
   const getColumnTotal = useCallback((itemKey: string) => {
-    return payments
-      .filter(p => p.item_key === itemKey)
-      .reduce((acc, p) => acc + (p.amount_paid || 0), 0);
+    return calculateColumnTotal(payments, itemKey);
   }, [payments]);
 
   const updateGroupSettings = async (updated: Partial<GroupSettings>) => {
@@ -164,12 +190,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addExpense = async (title: string, amount: number, category: string, date: string, recordedBy?: string, notes?: string) => {
-    await DbService.addExpense(title, amount, category, date, recordedBy, notes);
+    if (!settings) return;
+    await DbService.addExpense(title, amount, category, date, recordedBy, notes, settings.active_year);
     await refreshAll();
   };
 
   const deleteExpense = async (id: number) => {
     await DbService.deleteExpense(id);
+    await refreshAll();
+  };
+
+  const closeFinancialYear = async (params: {
+    closingYear: number;
+    nextYear: number;
+    carriedForwardAmount: number;
+    closedBy: string;
+    notes?: string;
+  }) => {
+    await DbService.closeFinancialYear(params);
+    await refreshAll();
+  };
+
+  const reopenFinancialYear = async (year: number) => {
+    await DbService.reopenFinancialYear(year);
     await refreshAll();
   };
 
@@ -191,9 +234,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         customColumns,
         payments,
         expenses,
+        openingBalance,
         totalIncome,
         totalExpenses,
         netBalance,
+        currentFinancialYear: financialYear,
+        allFinancialYears,
+        isYearClosed,
         refreshAll,
         updateGroupSettings,
         addMember,
@@ -206,6 +253,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         recordPayment,
         addExpense,
         deleteExpense,
+        closeFinancialYear,
+        reopenFinancialYear,
         backupData,
         restoreData,
         getPaymentForCell,

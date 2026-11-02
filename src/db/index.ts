@@ -65,7 +65,20 @@ export async function initDatabase(db: SQLite.SQLiteDatabase): Promise<void> {
       amount REAL NOT NULL,
       category TEXT NOT NULL,
       expense_date TEXT NOT NULL,
+      year INTEGER NOT NULL DEFAULT 2026,
       recorded_by TEXT,
+      notes TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS financial_years (
+      year INTEGER PRIMARY KEY,
+      status TEXT NOT NULL DEFAULT 'open',
+      opening_balance REAL NOT NULL DEFAULT 0,
+      total_income REAL NOT NULL DEFAULT 0,
+      total_expenses REAL NOT NULL DEFAULT 0,
+      closing_balance REAL NOT NULL DEFAULT 0,
+      closed_at TEXT,
+      closed_by TEXT,
       notes TEXT
     );
   `);
@@ -76,6 +89,16 @@ export async function initDatabase(db: SQLite.SQLiteDatabase): Promise<void> {
   } catch {}
   try {
     await db.execAsync(`ALTER TABLE members ADD COLUMN status_reason TEXT;`);
+  } catch {}
+
+  // Migration: Add year column to expenses if missing
+  try {
+    await db.execAsync(`ALTER TABLE expenses ADD COLUMN year INTEGER NOT NULL DEFAULT 2026;`);
+  } catch {}
+
+  // Migration: Backfill expenses year based on expense_date if 0 or null
+  try {
+    await db.execAsync(`UPDATE expenses SET year = CAST(substr(expense_date, 1, 4) AS INTEGER) WHERE year IS NULL OR year = 0;`);
   } catch {}
 
   // Migration: Ensure default target for membership and monthly contribution is 5000
@@ -95,63 +118,8 @@ export async function initDatabase(db: SQLite.SQLiteDatabase): Promise<void> {
     await db.runAsync(`
       INSERT INTO custom_columns (column_key, column_label, default_amount, sort_order, is_enabled)
       VALUES 
-        ('col_welfare', 'Welfare', 10, 1, 1),
-        ('col_party', 'End Year Party', 25, 2, 0);
-    `);
-
-    // Seed initial members matching the template
-    const initialMembers = [
-      { sr: 1, name: 'Priya Sharma', phone: '+1 555-0148', role: 'Treasurer', initials: 'PS' },
-      { sr: 2, name: 'Fatima Noor', phone: '+1 555-0903', role: 'Elder', initials: 'FN' },
-      { sr: 3, name: 'Elena Rostova', phone: '+1 555-0192', role: 'Member', initials: 'ER' },
-      { sr: 4, name: 'Grace Mutua', phone: '+1 555-0119', role: 'Member', initials: 'GM' },
-      { sr: 5, name: 'Ananya Roy', phone: '+1 555-0234', role: 'Secretary', initials: 'AR' },
-      { sr: 6, name: 'Amara Okafor', phone: '+1 555-0144', role: 'Member', initials: 'AO' },
-      { sr: 7, name: 'Sunita Rao', phone: '+1 555-0812', role: 'Member', initials: 'SR' },
-    ];
-
-    for (const m of initialMembers) {
-      const res = await db.runAsync(
-        `INSERT INTO members (sr_number, name, phone_number, avatar_initials, role, is_active) VALUES (?, ?, ?, ?, ?, 1)`,
-        [m.sr, m.name, m.phone, m.initials, m.role]
-      );
-      const memberId = res.lastInsertRowId;
-
-      // Seed Membership Fee
-      await db.runAsync(
-        `INSERT INTO payments (member_id, item_key, year, amount_paid, target_amount, status) VALUES (?, 'fee', 2025, ?, 50, 'paid')`,
-        [memberId, 50]
-      );
-
-      // Seed Jan, Feb, Mar as paid
-      for (const month of ['jan', 'feb', 'mar']) {
-        await db.runAsync(
-          `INSERT INTO payments (member_id, item_key, year, amount_paid, target_amount, status) VALUES (?, ?, 2025, 100, 100, 'paid')`,
-          [memberId, month]
-        );
-      }
-
-      // Seed April: some paid, some due
-      const isDue = m.sr === 3 || m.sr === 5;
-      await db.runAsync(
-        `INSERT INTO payments (member_id, item_key, year, amount_paid, target_amount, status) VALUES (?, 'apr', 2025, ?, 100, ?)`,
-        [memberId, isDue ? 0 : 100, isDue ? 'unpaid' : 'paid']
-      );
-
-      // Seed Welfare
-      await db.runAsync(
-        `INSERT INTO payments (member_id, item_key, year, amount_paid, target_amount, status) VALUES (?, 'col_welfare', 2025, 10, 10, 'paid')`,
-        [memberId]
-      );
-    }
-
-    // Seed realistic sample expenses
-    await db.runAsync(`
-      INSERT INTO expenses (title, amount, category, expense_date, recorded_by, notes)
-      VALUES 
-        ('Hall B Rental & Chairs', 12000, 'Venue', '2025-04-14', 'Priya Sharma', 'April Meeting Space'),
-        ('Refreshments & Tea', 4500, 'Refreshments', '2025-04-14', 'Fatima Noor', 'Snacks and water bottles'),
-        ('Ledger Book & Stationery', 2500, 'Supplies', '2025-03-10', 'Ananya Roy', 'Receipt pads and pens');
+        ('col_welfare', 'Welfare', 5000, 1, 1),
+        ('col_party', 'End Year Party', 5000, 2, 0);
     `);
   } else if (settings.currency_symbol !== 'MWK ') {
     await db.runAsync(`UPDATE group_settings SET currency_symbol = 'MWK ' WHERE id = 1`);

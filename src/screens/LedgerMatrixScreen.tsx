@@ -33,6 +33,11 @@ import {
   CheckCircle2,
   X,
   Download,
+  Lock,
+  Unlock,
+  AlertCircle,
+  ArrowRight,
+  FileCheck2,
 } from 'lucide-react-native';
 
 // ---------------------------------------------------------------------------
@@ -61,9 +66,13 @@ export const LedgerMatrixScreen: React.FC<{
     settings,
     members,
     customColumns,
+    openingBalance,
     totalIncome,
     totalExpenses,
     netBalance,
+    isYearClosed,
+    currentFinancialYear,
+    allFinancialYears,
     getPaymentForCell,
     getMemberRowTotal,
     getColumnTotal,
@@ -72,6 +81,8 @@ export const LedgerMatrixScreen: React.FC<{
     updateMember,
     deleteMember,
     updateGroupSettings,
+    closeFinancialYear,
+    reopenFinancialYear,
     backupData,
     restoreData,
   } = useApp();
@@ -85,6 +96,12 @@ export const LedgerMatrixScreen: React.FC<{
 
   // Cycle Switcher Modal
   const [cycleModalVisible, setCycleModalVisible] = useState(false);
+
+  // Close Year Modal & Wizard State
+  const [closeYearModalVisible, setCloseYearModalVisible] = useState(false);
+  const [carriedForwardInput, setCarriedForwardInput] = useState('');
+  const [officerNameInput, setOfficerNameInput] = useState('');
+  const [closingNotesInput, setClosingNotesInput] = useState('');
 
   // Backup / Restore Modal
   const [backupModalVisible, setBackupModalVisible] = useState(false);
@@ -199,6 +216,13 @@ export const LedgerMatrixScreen: React.FC<{
   };
 
   const handleCellPress = (member: Member, itemKey: string, title: string, defaultTarget: number) => {
+    if (isYearClosed) {
+      Alert.alert(
+        'Financial Year Closed',
+        `The ${currentYear} cycle has been locked and archived. Reopen the year first to record or modify payments.`
+      );
+      return;
+    }
     const p = getPaymentForCell(member.id, itemKey);
     setActiveCellKey(`${member.id}_${itemKey}`);
     setActiveCell({
@@ -246,7 +270,7 @@ export const LedgerMatrixScreen: React.FC<{
     try {
       const json = await backupData();
       const dateStr = new Date().toISOString().split('T')[0];
-      const fileName = `circlefund_backup_${dateStr}.json`;
+      const fileName = `shair_backup_${dateStr}.json`;
       const fileUri = `${FileSystem.cacheDirectory || ''}${fileName}`;
 
       await FileSystem.writeAsStringAsync(fileUri, json);
@@ -254,7 +278,7 @@ export const LedgerMatrixScreen: React.FC<{
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(fileUri, {
           mimeType: 'application/json',
-          dialogTitle: 'Save / Share CircleFund Backup',
+          dialogTitle: 'Save / Share Shair Backup',
         });
       } else {
         Alert.alert('Backup Created', `Saved to ${fileUri}`);
@@ -387,6 +411,72 @@ export const LedgerMatrixScreen: React.FC<{
   };
 
   // ---------------------------------------------------------------------------
+  // Year-Close Handler
+  // ---------------------------------------------------------------------------
+  const handleCloseYear = async () => {
+    const carried = parseFloat(carriedForwardInput);
+    if (isNaN(carried) || carried < 0) {
+      Alert.alert('Invalid Amount', 'Enter a valid carry-forward amount (0 or more).');
+      return;
+    }
+    if (!officerNameInput.trim()) {
+      Alert.alert('Required', 'Please enter the name of the officer closing the books.');
+      return;
+    }
+    const closingYear = settings?.active_year || 2026;
+    const nextYear = closingYear + 1;
+    Alert.alert(
+      'Confirm Year Close',
+      `You are about to close the ${closingYear} financial year and open ${nextYear}.\n\n• ${currency} ${carried.toLocaleString()} will be carried forward\n• This action cannot be undone automatically\n• All ${closingYear} payment records will be preserved`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: `Close ${closingYear}`,
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await closeFinancialYear({
+                closingYear,
+                nextYear,
+                carriedForwardAmount: carried,
+                closedBy: officerNameInput.trim(),
+                notes: closingNotesInput.trim(),
+              });
+              setCloseYearModalVisible(false);
+              setCarriedForwardInput('');
+              setOfficerNameInput('');
+              setClosingNotesInput('');
+              Alert.alert(
+                'Year Closed',
+                `${closingYear} has been archived. You are now recording payments for ${nextYear}.`
+              );
+            } catch (err) {
+              Alert.alert('Error', 'Could not close the financial year. Please try again.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleReopenYear = () => {
+    const yr = settings?.active_year || 2026;
+    Alert.alert(
+      'Reopen Year',
+      `Reopen the ${yr} financial year for editing? The year will be marked active again.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reopen',
+          onPress: async () => {
+            await reopenFinancialYear(yr);
+          },
+        },
+      ]
+    );
+  };
+
+  // ---------------------------------------------------------------------------
   // Status helpers
   // ---------------------------------------------------------------------------
   const statusLabel = (s?: string) =>
@@ -485,9 +575,11 @@ export const LedgerMatrixScreen: React.FC<{
       <SummaryHeaderCard
         groupName={settings?.group_name || 'Sahodari Circle Fund'}
         currency={currency}
+        openingBalance={openingBalance}
         totalIncome={totalIncome}
         totalExpenses={totalExpenses}
         netBalance={netBalance}
+        isLocked={isYearClosed}
         onEditGroupName={handleOpenEditGroupName}
       />
 
@@ -517,6 +609,28 @@ export const LedgerMatrixScreen: React.FC<{
           <TouchableOpacity style={styles.exportBtn} onPress={handleExport}>
             <Share2 size={13} color={THEME.colors.primary} />
             <Text style={styles.exportBtnText}>PDF</Text>
+          </TouchableOpacity>
+
+          {/* Close / Reopen Year Button */}
+          <TouchableOpacity
+            style={[styles.actionIconButton, isYearClosed && { borderColor: THEME.colors.secondary }]}
+            onPress={() => {
+              if (isYearClosed) {
+                handleReopenYear();
+              } else {
+                setCarriedForwardInput(String(Math.max(0, Math.round(netBalance))));
+                setCloseYearModalVisible(true);
+              }
+            }}
+            activeOpacity={0.7}
+          >
+            {isYearClosed
+              ? <Unlock size={13} color={THEME.colors.secondary} />
+              : <FileCheck2 size={13} color={THEME.colors.textMuted} />
+            }
+            <Text style={[styles.actionIconBtnText, isYearClosed && { color: THEME.colors.secondary }]}>
+              {isYearClosed ? 'Unlock' : 'Close Yr'}
+            </Text>
           </TouchableOpacity>
 
           {/* Add Contributor Button */}
@@ -587,8 +701,31 @@ export const LedgerMatrixScreen: React.FC<{
       </View>
 
       {/* ─── STICKY TABLE WITH ZEBRA PATTERN & ACTIVE TOUCH ──────────────────── */}
-      <View style={styles.tableCard}>
-        <View style={{ flex: 1, flexDirection: 'row' }}>
+      {filteredMembers.length === 0 ? (
+        <View style={styles.emptyTableContainer}>
+          <View style={styles.emptyTableIconCircle}>
+            <UserPlus size={28} color={THEME.colors.primary} />
+          </View>
+          <Text style={styles.emptyTableTitle}>No Contributors Found</Text>
+          <Text style={styles.emptyTableSub}>
+            {members.length === 0
+              ? 'Your circle ledger is ready. Add your first group contributor to begin logging payments.'
+              : 'No contributors match the current filter or search criteria.'}
+          </Text>
+          {members.length === 0 && (
+            <TouchableOpacity
+              style={styles.emptyTableAddBtn}
+              onPress={() => setNewMemberModalVisible(true)}
+              activeOpacity={0.8}
+            >
+              <UserPlus size={16} color="#FFFFFF" />
+              <Text style={styles.emptyTableAddBtnText}>Add First Contributor</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      ) : (
+        <View style={styles.tableCard}>
+          <View style={{ flex: 1, flexDirection: 'row' }}>
 
           {/* ── LEFT FIXED PANEL (SR + Member) ── */}
           <View style={styles.leftPanel}>
@@ -769,6 +906,7 @@ export const LedgerMatrixScreen: React.FC<{
           </ScrollView>
         </View>
       </View>
+      )}
 
       {/* Quick Payment Modal */}
       {activeCell && (
@@ -861,6 +999,35 @@ export const LedgerMatrixScreen: React.FC<{
               {/* Action Buttons */}
               <View style={styles.summaryActionsRow}>
                 <TouchableOpacity
+                  style={styles.summaryShareBtn}
+                  onPress={async () => {
+                    try {
+                      const m = summaryMember;
+                      const totals = getMemberRowTotal(m.id);
+                      const groupTitle = settings?.group_name || 'Shair Circle Fund';
+                      const year = settings?.active_year || 2026;
+                      const message = `*${groupTitle} — Contribution Summary*\nMember: ${m.name}\nCycle: ${year}\nTotal Contributed: ${currency} ${totals.paid.toLocaleString()}\nRemaining Dues: ${currency} ${totals.balance.toLocaleString()}\nStatus: ${m.status ? m.status.toUpperCase() : 'ACTIVE'}\n\nGenerated via Shair.`;
+                      
+                      if (await Sharing.isAvailableAsync()) {
+                        const fileUri = `${FileSystem.cacheDirectory || ''}receipt_${m.id}.txt`;
+                        await FileSystem.writeAsStringAsync(fileUri, message);
+                        await Sharing.shareAsync(fileUri, {
+                          mimeType: 'text/plain',
+                          dialogTitle: `Share ${m.name}'s Receipt`,
+                        });
+                      } else {
+                        Alert.alert('Member Summary', message);
+                      }
+                    } catch (err) {
+                      Alert.alert('Share Error', 'Could not share the receipt summary.');
+                    }
+                  }}
+                >
+                  <Share2 size={14} color={THEME.colors.primary} />
+                  <Text style={styles.summaryShareBtnText}>Share Receipt</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
                   style={styles.summaryManageBtn}
                   onPress={() => {
                     const m = summaryMember;
@@ -868,7 +1035,7 @@ export const LedgerMatrixScreen: React.FC<{
                     handleOpenMemberActions(m);
                   }}
                 >
-                  <Text style={styles.summaryManageBtnText}>Edit Profile / Standing</Text>
+                  <Text style={styles.summaryManageBtnText}>Edit Profile</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -881,29 +1048,47 @@ export const LedgerMatrixScreen: React.FC<{
         <View style={styles.modalOverlay}>
           <View style={styles.memberModalContent}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <Text style={styles.modalTitle}>Financial Cycle</Text>
+              <Text style={styles.modalTitle}>Financial Cycles</Text>
               <TouchableOpacity onPress={() => setCycleModalVisible(false)}>
                 <X size={18} color={THEME.colors.textMuted} />
               </TouchableOpacity>
             </View>
-            <Text style={styles.modalSub}>Select or archive your active annual contribution cycle (2026 onwards)</Text>
+            <Text style={styles.modalSub}>Select or review your annual contribution cycles</Text>
 
             {AVAILABLE_CYCLES.map((yr) => {
               const isSelected = yr === currentYear;
+              const yearRecord = allFinancialYears.find((fy) => fy.year === yr);
+              const isClosed = yearRecord?.status === 'closed';
+
               return (
                 <TouchableOpacity
                   key={yr}
                   style={[styles.cycleRow, isSelected && styles.cycleRowSelected]}
                   onPress={() => handleSelectCycle(yr)}
                 >
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                    <Calendar size={18} color={isSelected ? THEME.colors.primary : THEME.colors.textMuted} />
-                    <View>
-                      <Text style={[styles.cycleYearText, isSelected && styles.cycleYearTextSelected]}>
-                        Cycle {yr}
-                      </Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                    {isClosed ? (
+                      <Lock size={18} color={THEME.colors.secondary} />
+                    ) : (
+                      <Calendar size={18} color={isSelected ? THEME.colors.primary : THEME.colors.textMuted} />
+                    )}
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={[styles.cycleYearText, isSelected && styles.cycleYearTextSelected]}>
+                          Cycle {yr}
+                        </Text>
+                        {isClosed && (
+                          <View style={styles.cycleClosedBadge}>
+                            <Text style={styles.cycleClosedBadgeText}>Closed & Archived</Text>
+                          </View>
+                        )}
+                      </View>
                       <Text style={styles.cycleSubText}>
-                        {isSelected ? 'Active Cycle • Recording Payments' : 'Switch ledger to this cycle'}
+                        {isSelected
+                          ? (isClosed ? 'Active View (Locked Archive)' : 'Active Cycle • Recording Payments')
+                          : isClosed
+                          ? `Closing Balance: ${currency} ${(yearRecord?.closing_balance || 0).toLocaleString()}`
+                          : 'Switch ledger to this cycle'}
                       </Text>
                     </View>
                   </View>
@@ -911,6 +1096,95 @@ export const LedgerMatrixScreen: React.FC<{
                 </TouchableOpacity>
               );
             })}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Close Financial Year Wizard Modal */}
+      <Modal visible={closeYearModalVisible} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.memberModalContent}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <FileCheck2 size={20} color={THEME.colors.primary} />
+                <Text style={styles.modalTitle}>Close Financial Year {currentYear}</Text>
+              </View>
+              <TouchableOpacity onPress={() => setCloseYearModalVisible(false)}>
+                <X size={18} color={THEME.colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.modalSub}>
+              Archive {currentYear} records and open {currentYear + 1} with carried forward balance.
+            </Text>
+
+            {/* Financial Audit Summary Box */}
+            <View style={styles.yearCloseSummaryBox}>
+              <View style={styles.yearCloseSummaryRow}>
+                <Text style={styles.yearCloseSummaryLabel}>Total Income Collected:</Text>
+                <Text style={styles.yearCloseSummaryValGreen}>{currency} {totalIncome.toLocaleString()}</Text>
+              </View>
+              <View style={styles.yearCloseSummaryRow}>
+                <Text style={styles.yearCloseSummaryLabel}>Total Expenses Incurred:</Text>
+                <Text style={styles.yearCloseSummaryValRed}>{currency} {totalExpenses.toLocaleString()}</Text>
+              </View>
+              {openingBalance > 0 && (
+                <View style={styles.yearCloseSummaryRow}>
+                  <Text style={styles.yearCloseSummaryLabel}>Prior Carried Forward:</Text>
+                  <Text style={styles.yearCloseSummaryVal}>{currency} {openingBalance.toLocaleString()}</Text>
+                </View>
+              )}
+              <View style={[styles.yearCloseSummaryRow, { borderTopWidth: 1, borderTopColor: THEME.colors.border, paddingTop: 6, marginTop: 4 }]}>
+                <Text style={[styles.yearCloseSummaryLabel, { fontWeight: '800', color: THEME.colors.text }]}>Net Balance:</Text>
+                <Text style={[styles.yearCloseSummaryVal, { fontWeight: '900', color: THEME.colors.primary }]}>{currency} {netBalance.toLocaleString()}</Text>
+              </View>
+            </View>
+
+            {/* Carry Forward Amount Input */}
+            <Text style={styles.fieldLabel}>Amount to Carry Forward to {currentYear + 1} ({currency})</Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder={`e.g. ${Math.max(0, Math.round(netBalance))}`}
+              placeholderTextColor="#9A8E89"
+              keyboardType="numeric"
+              value={carriedForwardInput}
+              onChangeText={setCarriedForwardInput}
+            />
+
+            {/* Closing Officer */}
+            <Text style={styles.fieldLabel}>Authorized By (Treasurer / Secretary)</Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="e.g. Mary Banda (Treasurer)"
+              placeholderTextColor="#9A8E89"
+              value={officerNameInput}
+              onChangeText={setOfficerNameInput}
+            />
+
+            {/* Optional Closing Notes */}
+            <Text style={styles.fieldLabel}>Closing Notes & Remarks (Optional)</Text>
+            <TextInput
+              style={[styles.modalInput, { height: 54, textAlignVertical: 'top' }]}
+              placeholder="Audited and approved by general assembly..."
+              placeholderTextColor="#9A8E89"
+              value={closingNotesInput}
+              onChangeText={setClosingNotesInput}
+              multiline
+            />
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.cancelModalBtn}
+                onPress={() => setCloseYearModalVisible(false)}
+              >
+                <Text style={styles.cancelModalBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.saveModalBtn, { backgroundColor: THEME.colors.primary }]}
+                onPress={handleCloseYear}
+              >
+                <Text style={styles.saveModalBtnText}>Confirm & Close Year</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -1512,7 +1786,25 @@ const styles = StyleSheet.create({
   },
   summaryActionsRow: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 10,
+  },
+  summaryShareBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: THEME.colors.surfaceContainer,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: THEME.borderRadius.sm,
+  },
+  summaryShareBtnText: {
+    color: THEME.colors.primary,
+    fontWeight: '700',
+    fontSize: 13,
   },
   summaryManageBtn: {
     backgroundColor: THEME.colors.primary,
@@ -1520,9 +1812,113 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     borderRadius: THEME.borderRadius.sm,
   },
+
+  // Empty Table Container Styles
+  emptyTableContainer: {
+    marginHorizontal: THEME.spacing.md,
+    backgroundColor: THEME.colors.surface,
+    borderRadius: THEME.borderRadius.lg,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    padding: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 10,
+  },
+  emptyTableIconCircle: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: THEME.colors.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  emptyTableTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: THEME.colors.text,
+    marginBottom: 6,
+  },
+  emptyTableSub: {
+    fontSize: 13,
+    color: THEME.colors.textMuted,
+    textAlign: 'center',
+    lineHeight: 18,
+    marginBottom: 20,
+    maxWidth: 280,
+  },
+  emptyTableAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: THEME.colors.primary,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: THEME.borderRadius.md,
+    shadowColor: THEME.colors.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  emptyTableAddBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 14,
+  },
   summaryManageBtnText: {
     color: '#FFFFFF',
     fontWeight: '700',
     fontSize: 13,
+  },
+
+  // Cycle switcher badge styles
+  cycleClosedBadge: {
+    backgroundColor: THEME.colors.secondaryLight,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  cycleClosedBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: THEME.colors.secondary,
+  },
+
+  // Year close wizard summary styles
+  yearCloseSummaryBox: {
+    backgroundColor: THEME.colors.surfaceContainer,
+    borderRadius: THEME.borderRadius.sm,
+    padding: 12,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+  },
+  yearCloseSummaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginVertical: 3,
+  },
+  yearCloseSummaryLabel: {
+    fontSize: 12,
+    color: THEME.colors.textMuted,
+    fontWeight: '600',
+  },
+  yearCloseSummaryVal: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: THEME.colors.text,
+  },
+  yearCloseSummaryValGreen: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: THEME.colors.tertiary,
+  },
+  yearCloseSummaryValRed: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: THEME.colors.error,
   },
 });

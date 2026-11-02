@@ -1,25 +1,31 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { THEME } from '../constants/theme';
-import { ArrowUpRight, ArrowDownRight, Wallet, ShieldCheck, Edit3 } from 'lucide-react-native';
+import { ArrowUpRight, ArrowDownRight, Wallet, ShieldCheck, Edit3, Eye, EyeOff, Lock } from 'lucide-react-native';
 
 interface SummaryHeaderCardProps {
   groupName: string;
   currency: string;
+  openingBalance?: number;
   totalIncome: number;
   totalExpenses: number;
   netBalance: number;
+  isLocked?: boolean;
   onEditGroupName?: () => void;
 }
 
 export const SummaryHeaderCard: React.FC<SummaryHeaderCardProps> = ({
   groupName,
   currency,
+  openingBalance = 0,
   totalIncome,
   totalExpenses,
   netBalance,
+  isLocked = false,
   onEditGroupName,
 }) => {
+  const [isBalanceHidden, setIsBalanceHidden] = React.useState(false);
+
   return (
     <View style={styles.card}>
       {/* Decorative ambient background accents */}
@@ -33,7 +39,7 @@ export const SummaryHeaderCard: React.FC<SummaryHeaderCardProps> = ({
           onPress={onEditGroupName}
           activeOpacity={onEditGroupName ? 0.7 : 1}
         >
-          <Text style={styles.greetingText}>LEDGER OVERVIEW</Text>
+          <Text style={styles.greetingText}>SHAIR LEDGER OVERVIEW</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 1 }}>
             <Text style={styles.groupName} numberOfLines={1}>
               {groupName || 'Community Circle Fund'}
@@ -42,27 +48,59 @@ export const SummaryHeaderCard: React.FC<SummaryHeaderCardProps> = ({
           </View>
         </TouchableOpacity>
 
-        <View style={styles.statusPill}>
-          <ShieldCheck size={13} color="#FFFFFF" />
-          <Text style={styles.statusPillText}>Secure Vault</Text>
-        </View>
+        {isLocked ? (
+          <View style={[styles.statusPill, { backgroundColor: THEME.colors.secondary }]}>
+            <Lock size={12} color="#FFFFFF" />
+            <Text style={styles.statusPillText}>Archived & Locked</Text>
+          </View>
+        ) : (
+          <View style={styles.statusPill}>
+            <ShieldCheck size={13} color="#FFFFFF" />
+            <Text style={styles.statusPillText}>Active Ledger</Text>
+          </View>
+        )}
       </View>
 
       {/* Hero Balance Section */}
       <View style={styles.heroSection}>
         <View style={styles.balanceInfo}>
-          <Text style={styles.balanceLabel}>NET AVAILABLE BALANCE</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Text style={styles.balanceLabel}>NET AVAILABLE BALANCE</Text>
+            <TouchableOpacity
+              onPress={() => setIsBalanceHidden(!isBalanceHidden)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              {isBalanceHidden ? (
+                <EyeOff size={13} color="rgba(255, 255, 255, 0.7)" />
+              ) : (
+                <Eye size={13} color="rgba(255, 255, 255, 0.7)" />
+              )}
+            </TouchableOpacity>
+          </View>
           <View style={styles.balanceRow}>
             <Text style={styles.currencySymbol}>{currency}</Text>
             <Text style={[styles.netAmount, netBalance < 0 && styles.negativeBalance]}>
-              {netBalance.toLocaleString()}
+              {isBalanceHidden ? '••••••' : netBalance.toLocaleString()}
             </Text>
           </View>
+          {openingBalance > 0 && (
+            <Text style={{ fontSize: 10, color: 'rgba(255, 255, 255, 0.7)', marginTop: 2, fontWeight: '500' }}>
+              Includes {currency} {openingBalance.toLocaleString()} carried forward
+            </Text>
+          )}
         </View>
 
-        <View style={styles.iconCircle}>
-          <Wallet size={22} color="#FFFFFF" />
-        </View>
+        <TouchableOpacity
+          style={styles.iconCircle}
+          onPress={() => setIsBalanceHidden(!isBalanceHidden)}
+          activeOpacity={0.8}
+        >
+          {isBalanceHidden ? (
+            <EyeOff size={20} color="#FFFFFF" />
+          ) : (
+            <Wallet size={22} color="#FFFFFF" />
+          )}
+        </TouchableOpacity>
       </View>
 
       {/* Inflow & Outflow Chips / Split Row */}
